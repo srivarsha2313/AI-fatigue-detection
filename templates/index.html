@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Student Fatigue Detection — Quiz</title>
+<style>
+  :root{--bg:#0f1724;--card:#0b1220;--accent:#60a5fa;--muted:#94a3b8;--text:#e6eef8}
+  body{font-family:Inter,system-ui,Arial,sans-serif;background:linear-gradient(180deg,#071020,#0b1220);color:var(--text);margin:0;padding:24px;display:flex;justify-content:center}
+  .container{max-width:900px;width:100%}
+  header h1{margin:0 0 8px;font-size:24px}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:18px;border-radius:12px;box-shadow:0 6px 20px rgba(2,6,23,0.6); margin-bottom:14px}
+  .metadata{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:13px}
+  .quiz-question{margin-bottom:14px}
+  .options{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  input[type="text"], textarea{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:var(--text)}
+  button.primary{background:var(--accent);border:none;padding:10px 16px;border-radius:8px;color:#05263b;font-weight:600;cursor:pointer}
+  .stats{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;color:var(--muted)}
+  .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.6);z-index:50;backdrop-filter: blur(3px)}
+  .modal-card{background:#08202e;padding:22px;border-radius:12px;max-width:420px;color:var(--text);text-align:center}
+  .small{font-size:13px;color:var(--muted)}
+  footer{color:var(--muted);font-size:13px;margin-top:12px}
+  .scorebig{font-size:28px;font-weight:700;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="container">
+  <header class="card">
+    <h1>AI Fatigue Detection — Quiz</h1>
+    <div class="metadata">
+      <div>Session ID: <span id="sessionId" class="small"></span></div>
+      <div>Questions: 10</div>
+      <div id="timeRunning" class="small">Time: 0s</div>
+    </div>
+    <div class="small" style="margin-top:8px">
+      This page tracks mouse movement and typing activity (locally) to detect fatigue signals. No webcam used.
+    </div>
+  </header>
+
+  <main class="card" id="quizCard">
+    <form id="quizForm">
+      <div id="questions"></div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button type="submit" class="primary">Submit Quiz</button>
+        <div class="stats">
+          <div>Mouse speed (avg): <strong id="mouseSpeedDisp">—</strong> px/s</div>
+          <div>Typing speed (avg): <strong id="typingSpeedDisp">—</strong> CPM</div>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <section class="card" id="resultsCard" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div class="small">Result</div>
+        <div class="scorebig" id="scoreDisplay"></div>
+        <div class="small" id="evaluationText"></div>
+      </div>
+      <div style="text-align:right">
+        <div class="small">Details</div>
+        <div id="detailList" class="small" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </section>
+
+  <footer style="text-align:center">Made for your project • Data stored locally. Optionally send to server.</footer>
+</div>
+
+<!-- Modal -->
+<div id="fatigueModal" class="modal" style="display:none">
+  <div class="modal-card">
+    <h2>You seem a little tired...</h2>
+    <p class="small" id="modalMessage">Need some break?!</p>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
+      <button id="takeBreakBtn" class="primary">Take a 5 min break</button>
+      <button id="continueBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px;border-radius:8px;color:var(--text)">Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/*
+  Client-side implementation:
+    - Questions: 10 sample questions (6 MCQ, 4 short answer)
+    - Mouse speed: compute pixels traveled / seconds over the session
+    - Typing speed: characters typed / minute over the session (CPM)
+    - If score < 7 (i.e., fewer than 7 correct) OR mouse/typing speed below threshold -> show modal
+    - Data is saved to localStorage and optionally POSTed to /submit (Flask backend)
+*/
+
+// ----- CONFIG -----
+const SEND_TO_SERVER = false; // set true if you run the provided Flask backend
+const SERVER_ENDPOINT = '/submit'; // change if needed
+const SCORE_THRESHOLD = 7; // minimum correct answers required (out of 10)
+const MOUSE_SPEED_THRESHOLD = 50; // px/sec (tweakable)
+const TYPING_CPM_THRESHOLD = 180; // characters per minute (tweakable)
+
+// ----- Session init -----
+const sessionId = 'sess-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+document.getElementById('sessionId').textContent = sessionId;
+
+// ----- Questions (example). You should replace or extend these with your real questions -----
+const QUESTIONS = [
+  {id:1, type:'mcq', q:'What is 2 + 2?', choices:['2','3','4','5'], answer:'4'},
+  {id:2, type:'mcq', q:'HTML stands for ?', choices:['HyperText Markup Language','Hyperlinks and Text Markup','Home Tool Markup Language','None'], answer:'HyperText Markup Language'},
+  {id:3, type:'mcq', q:'Which is NOT a programming language?', choices:['Python','HTML','Java','C++'], answer:'HTML'},
+  {id:4, type:'text', q:'Name the loop that runs while a condition is true (one-word)', answer_keywords:['while','while-loop']},
+  {id:5, type:'text', q:'What does CPU stand for?', answer_keywords:['central processing unit','central processor']},
+  {id:6, type:'mcq', q:'Which data structure uses LIFO?', choices:['Queue','Stack','LinkedList','Tree'], answer:'Stack'},
+  {id:7, type:'mcq', q:'Which HTML tag inserts an image?', choices:['<img>','<a>','<div>','<p>'], answer:'<img>'},
+  {id:8, type:'text', q:'Give one antonym for "fatigue" (short answer)', answer_keywords:['energy','vigor','alertness','rested']},
+  {id:9, type:'mcq', q:'Which one is not a DBMS?', choices:['MySQL','MongoDB','SQLite','Windows'], answer:'Windows'},
+  {id:10,type:'text', q:'What is the color of the clear sky? (one word)', answer_keywords:['blue']}
+];
+
+// render questions
+const qRoot = document.getElementById('questions');
+QUESTIONS.forEach(q=>{
+  const div = document.createElement('div');
+  div.className = 'quiz-question';
+  div.innerHTML = `<label><strong>Q${q.id}.</strong> ${q.q}</label>`;
+  if(q.type==='mcq'){
+    const opts = document.createElement('div'); opts.className='options';
+    q.choices.forEach((c, idx)=>{
+      const id = `q${q.id}_c${idx}`;
+      const radio = `<label><input type="radio" name="q${q.id}" value="${escapeHtml(c)}"> ${escapeHtml(c)}</label>`;
+      opts.innerHTML += radio;
+    });
+    div.appendChild(opts);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.name = `q${q.id}`;
+    ta.rows = 2;
+    ta.placeholder = 'Type your answer here...';
+    div.appendChild(ta);
+  }
+  qRoot.appendChild(div);
+});
+
+// helper escape (for safety)
+function escapeHtml(s){ return s.toString().replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+// ---- Activity tracking ----
+let mouseDistances = 0; // total pixels
+let lastMouse = null;
+let mouseEvents = 0;
+let mouseStart = Date.now();
+
+let charCount = 0;
+let typingStart = null;
+let typingKeyEvents = 0;
+
+// timer for UI
+let secondsRunning = 0;
+setInterval(()=>{
+  secondsRunning++;
+  document.getElementById('timeRunning').textContent = `Time: ${secondsRunning}s`;
+}, 1000);
+
+// mouse tracking
+window.addEventListener('mousemove', (ev)=>{
+  const now = Date.now();
+  if(!lastMouse){
+    lastMouse = {x:ev.clientX,y:ev.clientY,t:now};
+    mouseStart = now;
+    return;
+  }
+  const dx = ev.clientX - lastMouse.x;
+  const dy = ev.clientY - lastMouse.y;
+  const dist = Math.hypot(dx,dy);
+  mouseDistances += dist;
+  mouseEvents++;
+  lastMouse = {x:ev.clientX,y:ev.clientY,t:now};
+  // update display occasionally
+  if(mouseEvents % 50 === 0){
+    updateSpeedDisplays();
+  }
+});
+
+// typing tracking: global keydown to measure any typing within page
+window.addEventListener('keydown', (ev)=>{
+  // ignore modifier keys
+  if(ev.key.length === 1 || ev.key === 'Backspace' || ev.key === 'Enter'){
+    if(!typingStart) typingStart = Date.now();
+    typingKeyEvents++;
+    // approximate char count: count characters typed in textareas/inputs
+    const active = document.activeElement;
+    if(active && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && active.type==='text'))){
+      if(ev.key === 'Backspace') charCount = Math.max(0,charCount-1);
+      else if(ev.key.length === 1) charCount++;
+    } else {
+      // if typing outside input, still count key events as small contribution
+      if(ev.key.length === 1) charCount++;
+    }
+    if(typingKeyEvents % 20 === 0) updateSpeedDisplays();
+  }
+});
+
+function computeMouseSpeed(){
+  const elapsed = (Date.now() - mouseStart)/1000; // seconds
+  if(elapsed <= 0) return 0;
+  return mouseDistances / elapsed; // px/sec
+}
+function computeTypingCPM(){
+  if(!typingStart) return 0;
+  const minutes = (Date.now() - typingStart)/60000;
+  if(minutes <= 0) return charCount / 1; // small positive fallback to CPM
+  return charCount / minutes;
+}
+function updateSpeedDisplays(){
+  const ms = Math.round(computeMouseSpeed()*10)/10;
+  const cpm = Math.round(computeTypingCPM());
+  document.getElementById('mouseSpeedDisp').textContent = ms || '—';
+  document.getElementById('typingSpeedDisp').textContent = cpm || '—';
+}
+
+// ----- Quiz evaluation helpers -----
+function normalizeText(s){
+  return (s||'').toString().trim().toLowerCase();
+}
+function textMatchesKeywords(answerText, keywords){
+  const txt = normalizeText(answerText);
+  for(const kw of keywords){
+    if(txt.includes(kw.toLowerCase())) return true;
+  }
+  // fallback: check similarity (small)
+  for(const kw of keywords){
+    if(levenshteinDistance(txt, kw.toLowerCase()) <= Math.max(1, Math.floor(kw.length*0.25))) return true;
+  }
+  return false;
+}
+
+// Levenshtein distance (small utility)
+function levenshteinDistance(a,b){
+  if(!a) return b.length;
+  if(!b) return a.length;
+  const m = a.length, n = b.length;
+  const dp = Array.from({length:m+1},()=>Array(n+1).fill(0));
+  for(let i=0;i<=m;i++) dp[i][0]=i;
+  for(let j=0;j<=n;j++) dp[0][j]=j;
+  for(let i=1;i<=m;i++){
+    for(let j=1;j<=n;j++){
+      const cost = a[i-1]===b[j-1] ? 0 : 1;
+      dp[i][j]=Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// form submit
+document.getElementById('quizForm').addEventListener('submit', async (ev)=>{
+  ev.preventDefault();
+  // compute answers
+  let correctCount = 0;
+  const details = [];
+  for(const q of QUESTIONS){
+    const name = `q${q.id}`;
+    const el = document.querySelector(`[name="${name}"]`);
+    let userAnswer = '';
+    if(q.type==='mcq'){
+      const selected = document.querySelector(`[name="${name}"]:checked`);
+      if(selected){
+        userAnswer = selected.value;
+      } else userAnswer = '';
+      const correct = (userAnswer === q.answer);
+      if(correct) correctCount++;
+      details.push({id:q.id, q:q.q, type:'mcq', userAnswer, correct});
+    } else {
+      const ta = document.querySelector(`[name="${name}"]`);
+      userAnswer = ta ? ta.value : '';
+      const correct = textMatchesKeywords(userAnswer, q.answer_keywords || []);
+      if(correct) correctCount++;
+      details.push({id:q.id, q:q.q, type:'text', userAnswer, correct});
+    }
+  }
+
+  updateSpeedDisplays();
+  const mouseSpeed = computeMouseSpeed();
+  const typingCPM = computeTypingCPM();
+
+  // show results
+  document.getElementById('resultsCard').style.display = 'block';
+  document.getElementById('scoreDisplay').textContent = `${correctCount} / ${QUESTIONS.length}`;
+  const evalText = `Mouse avg: ${Math.round(mouseSpeed*10)/10} px/s · Typing: ${Math.round(typingCPM)} CPM`;
+  document.getElementById('evaluationText').textContent = evalText;
+  const detailList = document.getElementById('detailList');
+  detailList.innerHTML = `Correct: ${correctCount}. Mouse: ${Math.round(mouseSpeed*10)/10} px/s. Typing: ${Math.round(typingCPM)} CPM`;
+
+  // Determine fatigue: conditions:
+  // - score < SCORE_THRESHOLD OR mouseSpeed below threshold OR typing below threshold
+  const lowScore = correctCount < SCORE_THRESHOLD;
+  const lowMouse = mouseSpeed > 0 && mouseSpeed < MOUSE_SPEED_THRESHOLD;
+  const lowTyping = typingCPM > 0 && typingCPM < TYPING_CPM_THRESHOLD;
+
+  // Build modal message
+  const modal = document.getElementById('fatigueModal');
+  const modalMessage = document.getElementById('modalMessage');
+  if(lowScore || lowMouse || lowTyping){
+    let reasons = [];
+    if(lowScore) reasons.push(`score (${correctCount} / ${QUESTIONS.length}) is below ${SCORE_THRESHOLD}`);
+    if(lowMouse) reasons.push(`low mouse activity (${Math.round(mouseSpeed*10)/10} px/s)`);
+    if(lowTyping) reasons.push(`low typing speed (${Math.round(typingCPM)} CPM)`);
+    modalMessage.textContent = `We detected: ${reasons.join(', ')}. Would you like a short break?`;
+    modal.style.display = 'flex';
+  } else {
+    modalMessage.textContent = 'Great! You look alert — keep going.';
+    modal.style.display = 'none';
+  }
+
+  // Save session data (local)
+  const sessionData = {
+    sessionId,
+    timestamp: new Date().toISOString(),
+    correctCount,
+    details,
+    mouseSpeed: Math.round(mouseSpeed*10)/10,
+    typingCPM: Math.round(typingCPM),
+    secondsRunning
+  };
+  saveLocalSession(sessionData);
+
+  // Optionally send to server
+  if(SEND_TO_SERVER){
+    try{
+      await fetch(SERVER_ENDPOINT, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(sessionData)
+      });
+    }catch(e){
+      console.warn('Failed to send to server', e);
+    }
+  }
+});
+
+// modal buttons
+document.getElementById('takeBreakBtn').addEventListener('click', ()=>{
+  // simple break logic: set a timer and show message — client side only
+  document.getElementById('fatigueModal').style.display = 'none';
+  alert('Break started: 5 minutes. A timer will run on this page — come back when ready.');
+  // you can extend: start countdown UI; for now simply reload after 5 minutes
+  setTimeout(()=>{ alert('Break over. You can resume the quiz or retake it.'); }, 5*60*1000);
+});
+document.getElementById('continueBtn').addEventListener('click', ()=>{
+  document.getElementById('fatigueModal').style.display = 'none';
+});
+
+// local storage
+function saveLocalSession(data){
+  try{
+    const arr = JSON.parse(localStorage.getItem('fatigueSessions')||'[]');
+    arr.push(data);
+    localStorage.setItem('fatigueSessions', JSON.stringify(arr));
+    console.log('Saved session locally.');
+  }catch(e){
+    console.warn('Failed to save local session', e);
+  }
+}
+
+</script>
+</body>
+</html>
